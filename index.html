@@ -2,260 +2,675 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>AR Interaction Lab (No Super-Hands)</title>
+  <title>AR Escape Room - Lab Project</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
 
   <!-- A-Frame -->
   <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
-  <!-- AR.js for A-Frame (marker-based AR) -->
-  <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js/aframe/build/aframe-ar.js"></script>
+  <!-- AR.js for NFT markers -->
+  <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js/aframe/build/aframe-ar-nft.js"></script>
 
   <style>
-    body { margin:0; overflow:hidden; }
-    .hud {
-      position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
-      display: grid; grid-template-columns: repeat(5, auto); gap: 8px;
-      font: 600 14px/1 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      z-index: 10; pointer-events: none;
+    body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    
+    /* Message overlay */
+    .message-overlay {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.85);
+      color: white;
+      padding: 20px 30px;
+      border-radius: 15px;
+      z-index: 1000;
+      max-width: 80%;
+      text-align: center;
+      font-size: 16px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+      display: none;
     }
-    .hud.hidden { display: none; }
-    .hud button {
-      pointer-events: auto;
-      padding: 10px 12px; border: 0; border-radius: 10px;
-      background: rgba(255,255,255,.9);
+
+    .message-overlay.show {
+      display: block;
+      animation: slideDown 0.3s ease-out;
+    }
+
+    @keyframes slideDown {
+      from { transform: translateX(-50%) translateY(-30px); opacity: 0; }
+      to { transform: translateX(-50%) translateY(0); opacity: 1; }
+    }
+
+    /* Progress tracker */
+    .progress-bar {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.7);
+      padding: 15px 25px;
+      border-radius: 25px;
+      z-index: 999;
+      display: flex;
+      gap: 10px;
+    }
+
+    .marker-indicator {
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.3);
+      transition: all 0.3s ease;
+    }
+
+    .marker-indicator.active {
+      background: #4CAF50;
+      box-shadow: 0 0 10px #4CAF50;
+    }
+
+    /* Puzzle modal */
+    .puzzle-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.9);
+      z-index: 2000;
+      display: none;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .puzzle-modal.show {
+      display: flex;
+    }
+
+    .puzzle-content {
+      background: white;
+      padding: 30px;
+      border-radius: 20px;
+      max-width: 400px;
+      text-align: center;
+    }
+
+    .puzzle-content h2 {
+      margin-top: 0;
+      color: #333;
+    }
+
+    .puzzle-content input {
+      width: 100%;
+      padding: 10px;
+      margin: 15px 0;
+      border: 2px solid #ddd;
+      border-radius: 8px;
+      font-size: 16px;
+      box-sizing: border-box;
+    }
+
+    .puzzle-content button {
+      background: #4CAF50;
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+      margin: 5px;
+    }
+
+    .puzzle-content button:hover {
+      background: #45a049;
+    }
+
+    .puzzle-content button.cancel {
+      background: #f44336;
+    }
+
+    .puzzle-content button.cancel:hover {
+      background: #da190b;
+    }
+
+    /* Loading screen */
+    .loading-screen {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: #000;
+      color: white;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      z-index: 3000;
+    }
+
+    .loading-screen.hide {
+      display: none;
     }
   </style>
-
-  <script>
-  // ---------- Utilities ----------
-  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-
-  // ---------- 1) Tap / doubletap / longpress ----------
-  AFRAME.registerComponent('tap-gestures', {
-    schema: {longMs:{default:500}},
-    init () {
-      let lastTap = 0, pressTimer = null, down = false;
-      this.el.addEventListener('mousedown', () => {
-        down = true;
-        const now = performance.now();
-        if (now - lastTap < 300) this.el.emit('doubletap');
-        lastTap = now;
-        pressTimer = setTimeout(() => { if (down) this.el.emit('longpress'); }, this.data.longMs);
-      });
-      this.el.addEventListener('mouseup', () => {
-        down = false;
-        clearTimeout(pressTimer);
-        this.el.emit('tap');
-      });
-      this.el.addEventListener('touchstart', e => e.preventDefault(), {passive:false});
-    }
-  });
-
-  // ---------- 2) Drag on a plane (marker plane) ----------
-  // Drag with mouse/touch by intersecting an invisible plane and moving the entity to that point.
-  AFRAME.registerComponent('drag-on-plane', {
-    schema: { plane: {type: 'selector'}, yOffset: {default: 0.25}, radius: {default: 0.6} },
-    init () {
-      this.dragging = false;
-      this.scene = this.el.sceneEl;
-      this.rayEl = document.querySelector('#ray'); // scene cursor ray
-      // listen on element
-      this.el.addEventListener('mousedown', () => this.dragging = true);
-      window.addEventListener('mouseup',   () => this.dragging = false);
-      window.addEventListener('touchend',  () => this.dragging = false);
-      // move
-      this.scene.addEventListener('mousemove', (e)=> this.updateDrag());
-      this.scene.addEventListener('touchmove', (e)=> this.updateDrag());
-    },
-    updateDrag () {
-      if (!this.dragging) return;
-      if (!this.data.plane) return;
-      const raycaster = this.rayEl.getObject3D('raycaster');
-      if (!raycaster) return;
-      const planeMesh = this.data.plane.getObject3D('mesh');
-      if (!planeMesh) return;
-
-      // Build a THREE.Plane from the plane entity (its world transform).
-      planeMesh.updateMatrixWorld();
-      const normal = new THREE.Vector3(0,1,0).applyQuaternion(planeMesh.getWorldQuaternion(new THREE.Quaternion()));
-      const point  = planeMesh.getWorldPosition(new THREE.Vector3());
-      const plane  = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, point);
-
-      const ray = raycaster.ray; // world-space ray from cursor
-      const hit = new THREE.Vector3();
-      if (ray.intersectPlane(plane, hit)) {
-        // constrain to radius on XZ around marker center
-        const local = this.el.parentEl.object3D.worldToLocal(hit.clone());
-        const r = Math.hypot(local.x, local.z);
-        const maxR = this.data.radius;
-        if (r > maxR){
-          const k = maxR / r;
-          local.x *= k; local.z *= k;
-        }
-        this.el.setAttribute('position', `${local.x} ${this.data.yOffset} ${local.z}`);
-      }
-    }
-  });
-
-  // ---------- 3) Pinch to scale ----------
-  AFRAME.registerComponent('pinch-scale', {
-    schema: {min:{default:0.2}, max:{default:3}},
-    init(){
-      this.active = false; this.startD = 0; this.startScale = null;
-      const onStart = (e) => {
-        if (e.touches && e.touches.length === 2){
-          this.active = true;
-          this.startD = this.dist(e.touches[0], e.touches[1]);
-          this.startScale = Object.assign({}, this.el.getAttribute('scale'));
-        }
-      };
-      const onMove = (e) => {
-        if (!this.active || !e.touches || e.touches.length < 2) return;
-        const d = this.dist(e.touches[0], e.touches[1]);
-        const mult = d / this.startD;
-        const ns = {
-          x: clamp(this.startScale.x * mult, this.data.min, this.data.max),
-          y: clamp(this.startScale.y * mult, this.data.min, this.data.max),
-          z: clamp(this.startScale.z * mult, this.data.min, this.data.max),
-        };
-        this.el.setAttribute('scale', ns);
-      };
-      const onEnd = () => this.active = false;
-      window.addEventListener('touchstart', onStart, {passive:false});
-      window.addEventListener('touchmove',  onMove,  {passive:false});
-      window.addEventListener('touchend',   onEnd);
-      window.addEventListener('touchcancel',onEnd);
-    },
-    dist(a,b){ const dx=a.clientX-b.clientX, dy=a.clientY-b.clientY; return Math.hypot(dx,dy); }
-  });
-
-  // ---------- 4) Twist to rotate (two-finger) ----------
-  AFRAME.registerComponent('twist-rotate', {
-    schema:{degPerRad:{default:57.2958}}, // 180/π
-    init(){
-      this.active = false; this.startA = 0; this.startRotY = 0;
-      const angle = (a,b)=> Math.atan2(b.clientY-a.clientY, b.clientX-a.clientX);
-      const onStart = (e)=>{
-        if (e.touches && e.touches.length === 2){
-          this.active = true;
-          this.startA = angle(e.touches[0], e.touches[1]);
-          this.startRotY = this.el.getAttribute('rotation').y;
-        }
-      };
-      const onMove = (e)=>{
-        if (!this.active || !e.touches || e.touches.length < 2) return;
-        const a = angle(e.touches[0], e.touches[1]);
-        const delta = (a - this.startA) * this.data.degPerRad;
-        const r = this.el.getAttribute('rotation');
-        this.el.setAttribute('rotation', {x:r.x, y:this.startRotY + delta, z:r.z});
-      };
-      const onEnd = ()=> this.active = false;
-      window.addEventListener('touchstart', onStart, {passive:false});
-      window.addEventListener('touchmove',  onMove,  {passive:false});
-      window.addEventListener('touchend',   onEnd);
-      window.addEventListener('touchcancel',onEnd);
-    }
-  });
-
-  // ---------- 5) Spin toggler + random color (hooked to taps) ----------
-  AFRAME.registerComponent('spin-toggle', {
-    schema:{speed:{default:4000}},
-    init(){
-      this.spinning = false;
-      this.el.addEventListener('toggle-spin', ()=> {
-        this.spinning = !this.spinning;
-        if (this.spinning) {
-          this.el.setAttribute('animation__spin',
-            `property: rotation; to: 0 360 0; loop: true; dur: ${this.data.speed}`);
-        } else {
-          this.el.removeAttribute('animation__spin');
-        }
-      });
-      this.el.addEventListener('random-color', ()=> {
-        const colors = ['#4CC3D9','#FFC65D','#7BC8A4','#EF2D5E','#FFFFFF'];
-        const c = colors[Math.floor(Math.random()*colors.length)];
-        this.el.setAttribute('material','color',c);
-      });
-    }
-  });
-  </script>
 </head>
 <body>
-  <!-- HUD -->
-  <div class="hud" id="hud">
-    <button id="btn-rot-l">⟲</button>
-    <button id="btn-rot-r">⟳</button>
-    <button id="btn-scale--">−</button>
-    <button id="btn-scale-+">＋</button>
-    <button id="btn-color">🎨</button>
+  <!-- Loading Screen -->
+  <div class="loading-screen" id="loadingScreen">
+    <h1>🔐 AR Escape Room</h1>
+    <p>Loading AR experience...</p>
   </div>
 
+  <!-- Message Overlay -->
+  <div class="message-overlay" id="messageOverlay"></div>
+
+  <!-- Progress Bar -->
+  <div class="progress-bar" id="progressBar">
+    <div class="marker-indicator" data-marker="marker1"></div>
+    <div class="marker-indicator" data-marker="marker2"></div>
+    <div class="marker-indicator" data-marker="marker3"></div>
+    <div class="marker-indicator" data-marker="marker4"></div>
+    <div class="marker-indicator" data-marker="marker5"></div>
+    <div class="marker-indicator" data-marker="marker6"></div>
+    <div class="marker-indicator" data-marker="marker7"></div>
+  </div>
+
+  <!-- Puzzle Modal -->
+  <div class="puzzle-modal" id="puzzleModal">
+    <div class="puzzle-content">
+      <h2 id="puzzleTitle">Puzzle</h2>
+      <p id="puzzleQuestion"></p>
+      <input type="text" id="puzzleAnswer" placeholder="Enter your answer">
+      <div>
+        <button onclick="submitPuzzle()">Submit</button>
+        <button class="cancel" onclick="closePuzzle()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- AR Scene -->
   <a-scene
+    vr-mode-ui="enabled: false"
+    renderer="logarithmicDepthBuffer: true; precision: medium;"
     embedded
-    renderer="colorManagement: true; physicallyCorrectLights: true"
-    xr-mode-ui="enabled: false"
-    arjs="sourceType: webcam; detectionMode: mono; debugUIEnabled: false">
+    arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;">
 
-    <!-- Cursor ray for mouse/touch (A-Frame builds a raycaster object3D for us) -->
-    <a-entity id="ray" cursor="rayOrigin: mouse" raycaster="objects: .raytarget"></a-entity>
-
-    <!-- Lights -->
-    <a-entity light="type: ambient; intensity: 0.8"></a-entity>
-    <a-entity light="type: directional; intensity: 0.6" position="0 1 1"></a-entity>
-
-    <!-- Marker -->
-    <a-marker preset="hiro" id="marker">
-
-      <!-- Invisible drag plane anchored to marker -->
-      <a-plane id="dragplane" class="raytarget"
-               position="0 0 0" rotation="-90 0 0" width="2" height="2"
-               material="color: #000; opacity: 0; transparent: true"></a-plane>
-
-      <!-- Interactive object -->
-      <a-box id="cube" class="raytarget"
-             position="0 0.25 0" depth="0.5" height="0.5" width="0.5"
-             material="metalness:0.1; roughness:0.6; color:#4CC3D9"
-             tap-gestures spin-toggle
-             drag-on-plane="plane: #dragplane; yOffset: 0.25; radius: 0.6"
-             pinch-scale twist-rotate>
-      </a-box>
-
-      <!-- Marker center dot (optional) -->
-      <a-cylinder radius="0.01" height="0.001" color="#888"></a-cylinder>
-    </a-marker>
-
+    <!-- Camera -->
     <a-entity camera></a-entity>
+
+    <!-- NFT Marker 1 -->
+    <a-nft
+      id="marker1"
+      type="nft"
+      url="markers/1m"
+      smooth="true"
+      smoothCount="10"
+      smoothTolerance="0.01"
+      smoothThreshold="5">
+      
+      <!-- 3D Object for Marker 1 - Book -->
+      <a-entity 
+        id="obj1"
+        gltf-model="url(assets/fallen_book.glb)"
+        position="50 -400 0" 
+        rotation="-75 0 0"
+        scale="7 7 7"
+      </a-entity>
+      <a-text 
+        value="📖 BOOK" 
+        position="0 1.5 0" 
+        align="center" 
+        color="#8B4513"
+        scale="2 2 2">
+      </a-text>
+    </a-nft>
+
+    <!-- NFT Marker 2 -->
+    <a-nft
+      id="marker2"
+      type="nft"
+      url="markers/2m"
+      smooth="true"
+      smoothCount="10"
+      smoothTolerance="0.01"
+      smoothThreshold="5">
+      
+      <!-- 3D Object for Marker 2 - Rock -->
+      <a-sphere 
+        id="obj2"
+        color="#696969"
+        radius="0.3"
+        position="0 0 0" 
+        roughness="0.8"
+        metalness="0.1"
+        visible="false">
+      </a-sphere>
+      <a-text 
+        value="🪨 ROCK" 
+        position="0 1.5 0" 
+        align="center" 
+        color="#696969"
+        scale="2 2 2"
+        visible="false">
+      </a-text>
+    </a-nft>
+
+    <!-- NFT Marker 3 -->
+    <a-nft
+      id="marker3"
+      type="nft"
+      url="markers/3m"
+      smooth="true"
+      smoothCount="10"
+      smoothTolerance="0.01"
+      smoothThreshold="5">
+      
+      <!-- 3D Object for Marker 3 - Feather -->
+      <a-entity 
+        id="obj3"
+        geometry="primitive: plane; width: 0.8; height: 2"
+        material="color: white; opacity: 0.9; transparent: true"
+        position="0 0 0" 
+        rotation="0 0 20"
+        visible="false">
+      </a-entity>
+      <a-text 
+        value="🪶 FEATHER" 
+        position="0 1.5 0" 
+        align="center" 
+        color="#F0F8FF"
+        scale="2 2 2"
+        visible="false">
+      </a-text>
+    </a-nft>
+
+    <!-- NFT Marker 4 -->
+    <a-nft
+      id="marker4"
+      type="nft"
+      url="markers/4m"
+      smooth="true"
+      smoothCount="10"
+      smoothTolerance="0.01"
+      smoothThreshold="5">
+      
+      <!-- 3D Object for Marker 4 - Key -->
+      <a-entity 
+        id="obj4"
+        geometry="primitive: cylinder; radius: 0.05; height: 1.5"
+        material="color: #FFD700; metalness: 0.8; roughness: 0.2"
+        position="0 0 0"
+        visible="false">
+        <!-- Key head -->
+        <a-entity 
+          geometry="primitive: torus; radius: 0.25; radiusTubular: 0.05"
+          material="color: #FFD700; metalness: 0.8; roughness: 0.2"
+          position="0 0.7 0">
+        </a-entity>
+        <!-- Key teeth -->
+        <a-entity 
+          geometry="primitive: box; width: 0.3; height: 0.1; depth: 0.05"
+          material="color: #FFD700; metalness: 0.8; roughness: 0.2"
+          position="0.15 -0.7 0">
+        </a-entity>
+      </a-entity>
+      <a-text 
+        value="🔑 KEY" 
+        position="0 1.5 0" 
+        align="center" 
+        color="#FFD700"
+        scale="2 2 2"
+        visible="false">
+      </a-text>
+    </a-nft>
+
+    <!-- NFT Marker 5 -->
+    <a-nft
+      id="marker5"
+      type="nft"
+      url="markers/5m"
+      smooth="true"
+      smoothCount="10"
+      smoothTolerance="0.01"
+      smoothThreshold="5">
+      
+      <!-- 3D Object for Marker 5 - Flower -->
+      <a-entity 
+        id="obj5"
+        position="0 0 0"
+        visible="false">
+        <!-- Flower stem -->
+        <a-entity 
+          geometry="primitive: cylinder; radius: 0.02; height: 1"
+          material="color: #228B22"
+          position="0 -0.5 0">
+        </a-entity>
+        <!-- Flower petals -->
+        <a-entity 
+          geometry="primitive: sphere; radius: 0.3"
+          material="color: #FFFF00"
+          position="0 0 0">
+        </a-entity>
+        <!-- Flower center -->
+        <a-entity 
+          geometry="primitive: sphere; radius: 0.1"
+          material="color: #FFA500"
+          position="0 0 0.25">
+        </a-entity>
+      </a-entity>
+      <a-text 
+        value="🌼 FLOWER" 
+        position="0 1.5 0" 
+        align="center" 
+        color="#FFFF00"
+        scale="2 2 2"
+        visible="false">
+      </a-text>
+    </a-nft>
+
+    <!-- NFT Marker 6 -->
+    <a-nft
+      id="marker6"
+      type="nft"
+      url="markers/6m"
+      smooth="true"
+      smoothCount="10"
+      smoothTolerance="0.01"
+      smoothThreshold="5">
+      
+      <!-- 3D Object for Marker 6 - Candle -->
+      <a-entity 
+        id="obj6"
+        position="0 0 0"
+        visible="false">
+        <!-- Candle body -->
+        <a-entity 
+          geometry="primitive: cylinder; radius: 0.15; height: 1"
+          material="color: #F5DEB3"
+          position="0 0 0">
+        </a-entity>
+        <!-- Wick -->
+        <a-entity 
+          geometry="primitive: cylinder; radius: 0.01; height: 0.1"
+          material="color: #2F4F4F"
+          position="0 0.55 0">
+        </a-entity>
+        <!-- Flame -->
+        <a-entity 
+          geometry="primitive: sphere; radius: 0.05"
+          material="color: #FF4500; emissive: #FF4500; emissiveIntensity: 0.5"
+          position="0 0.65 0">
+        </a-entity>
+      </a-entity>
+      <a-text 
+        value="🕯️ CANDLE" 
+        position="0 1.5 0" 
+        align="center" 
+        color="#F5DEB3"
+        scale="2 2 2"
+        visible="false">
+      </a-text>
+    </a-nft>
+
+    <!-- NFT Marker 7 -->
+    <a-nft
+      id="marker7"
+      type="nft"
+      url="markers/7m"
+      smooth="true"
+      smoothCount="10"
+      smoothTolerance="0.01"
+      smoothThreshold="5">
+      
+      <!-- 3D Object for Marker 7 - Village Emblem -->
+      <a-entity 
+        id="obj7"
+        position="0 0 0"
+        visible="false">
+        <!-- Shield base -->
+        <a-entity 
+          geometry="primitive: box; width: 0.8; height: 1; depth: 0.1"
+          material="color: #8B4513; roughness: 0.8"
+          position="0 0 0">
+        </a-entity>
+        <!-- Emblem symbol (cross) -->
+        <a-entity 
+          geometry="primitive: box; width: 0.1; height: 0.6; depth: 0.05"
+          material="color: #FFD700"
+          position="0 0 0.06">
+        </a-entity>
+        <a-entity 
+          geometry="primitive: box; width: 0.4; height: 0.1; depth: 0.05"
+          material="color: #FFD700"
+          position="0 0 0.06">
+        </a-entity>
+      </a-entity>
+      <a-text 
+        value="🛡️ VILLAGE EMBLEM" 
+        position="0 1.5 0" 
+        align="center" 
+        color="#8B4513"
+        scale="2 2 2"
+        visible="false">
+      </a-text>
+    </a-nft>
   </a-scene>
 
   <script>
-    const hud  = document.getElementById('hud');
-    const cube = document.getElementById('cube');
+    // Game state
+    const gameState = {
+      scannedMarkers: new Set(),
+      currentSequence: ['marker1', 'marker2', 'marker3', 'marker4', 'marker5', 'marker6', 'marker7'],
+      puzzles: {
+        marker1: {
+          question: "I hold knowledge and stories within my pages. What am I?",
+          answer: "book",
+          hint: "Open me to learn..."
+        },
+        marker2: {
+          question: "Solid and steady, from the earth I came. What am I?",
+          answer: "rock",
+          hint: "Hard as stone..."
+        },
+        marker3: {
+          question: "Light as air, I help birds fly. What am I?",
+          answer: "feather",
+          hint: "Soft and weightless..."
+        },
+        marker4: {
+          question: "I unlock doors and secrets alike. What am I?",
+          answer: "key",
+          hint: "Turn me to open..."
+        },
+        marker5: {
+          question: "Colorful and fragrant, I bloom in spring. What am I?",
+          answer: "flower",
+          hint: "I need sun and water..."
+        },
+        marker6: {
+          question: "I light the darkness with my gentle flame. What am I?",
+          answer: "candle",
+          hint: "I burn bright..."
+        },
+        marker7: {
+          question: "I represent the village and its people. What am I?",
+          answer: "emblem",
+          hint: "A symbol of unity..."
+        }
+      },
+      currentPuzzle: null,
+      markerOrder: []
+    };
 
-    // Buttons
-    document.getElementById('btn-rot-l').addEventListener('click', () => nudgeRot(-15));
-    document.getElementById('btn-rot-r').addEventListener('click', () => nudgeRot( 15));
-    function nudgeRot(delta){
-      const r = cube.getAttribute('rotation');
-      cube.setAttribute('rotation', {x:r.x, y:r.y + delta, z:r.z});
+    // Wait for scene to load
+    document.addEventListener('DOMContentLoaded', () => {
+      setTimeout(() => {
+        document.getElementById('loadingScreen').classList.add('hide');
+        showMessage("🧙 A wise wizard awaits with tales of legend...", 3000);
+      }, 2000);
+    });
+
+    // Marker detection handlers
+    const markers = ['marker1', 'marker2', 'marker3', 'marker4', 'marker5', 'marker6', 'marker7'];
+    
+    markers.forEach(markerId => {
+      const markerEl = document.getElementById(markerId);
+      
+      markerEl.addEventListener('markerFound', () => {
+        console.log(`${markerId} found`);
+        handleMarkerFound(markerId);
+      });
+
+      markerEl.addEventListener('markerLost', () => {
+        console.log(`${markerId} lost`);
+      });
+    });
+
+    function handleMarkerFound(markerId) {
+      // Check if already scanned
+      if (gameState.scannedMarkers.has(markerId)) {
+        showMessage("✓ Already scanned!", 2000);
+        return;
+      }
+
+      // Check if it's the correct sequence
+      const expectedNext = gameState.currentSequence[gameState.scannedMarkers.size];
+      
+      if (markerId !== expectedNext) {
+        showMessage(`❌ Wrong marker! Scan in the correct order.`, 2500);
+        return;
+      }
+
+      // Unlock marker immediately without puzzle
+      gameState.scannedMarkers.add(markerId);
+      gameState.markerOrder.push(markerId);
+      
+      // Update progress bar
+      updateProgressBar(markerId);
+      
+      // Show the 3D object
+      revealMarkerObject(markerId);
+      
+      // Show success message
+      showMessage(`✓ ${getMarkerName(markerId)} unlocked!`, 2000);
+      
+      // Check if game is complete
+      if (gameState.scannedMarkers.size === 7) {
+        setTimeout(() => {
+          showMessage("🎉 Victory! You are the Dragon Slayer! 👑🐉⚔️", 5000);
+        }, 2500);
+      } else {
+        // Show cryptic hint for next marker
+        setTimeout(() => {
+          const hints = {
+            'marker1': '📜 "Seek the ancient tome where dragon secrets are written..."',
+            'marker2': '🎯 "A hunter needs a weapon that strikes from afar..."',
+            'marker3': '🧪 "To summon the beast, brew the mystic elixir..."',
+            'marker4': '🐉 "The potion is ready. The dragon awaits your challenge..."',
+            'marker5': '⚔️ "From the fallen beast, claim your legendary reward..."',
+            'marker6': '👑 "The victor\'s seat awaits. Take your rightful throne..."'
+          };
+          const nextHint = hints[markerId];
+          if (nextHint) {
+            showMessage(nextHint, 4000);
+          }
+        }, 2500);
+      }
     }
 
-    document.getElementById('btn-scale--').addEventListener('click', () => nudgeScale(0.9));
-    document.getElementById('btn-scale-+').addEventListener('click', () => nudgeScale(1.1));
-    function nudgeScale(mult){
-      const s = cube.getAttribute('scale');
-      cube.setAttribute('scale', {
-        x: clamp(s.x * mult, 0.2, 3),
-        y: clamp(s.y * mult, 0.2, 3),
-        z: clamp(s.z * mult, 0.2, 3)
+    function showPuzzle(markerId) {
+      const puzzle = gameState.puzzles[markerId];
+      document.getElementById('puzzleTitle').textContent = `Puzzle: ${getMarkerName(markerId)}`;
+      document.getElementById('puzzleQuestion').textContent = puzzle.question;
+      document.getElementById('puzzleAnswer').value = '';
+      document.getElementById('puzzleModal').classList.add('show');
+    }
+
+    function closePuzzle() {
+      document.getElementById('puzzleModal').classList.remove('show');
+      gameState.currentPuzzle = null;
+    }
+
+    function submitPuzzle() {
+      const markerId = gameState.currentPuzzle;
+      const userAnswer = document.getElementById('puzzleAnswer').value.trim().toLowerCase();
+      const correctAnswer = gameState.puzzles[markerId].answer.toLowerCase();
+
+      if (userAnswer === correctAnswer) {
+        // Correct answer!
+        gameState.scannedMarkers.add(markerId);
+        gameState.markerOrder.push(markerId);
+        closePuzzle();
+        
+        // Update progress bar
+        updateProgressBar(markerId);
+        
+        // Show the 3D object
+        revealMarkerObject(markerId);
+        
+        // Show success message
+        showMessage(`✓ Correct! ${getMarkerName(markerId)} unlocked!`, 3000);
+        
+        // Check if game is complete
+        if (gameState.scannedMarkers.size === 7) {
+          setTimeout(() => {
+            showMessage("🎉 Victory! You are the Dragon Slayer! 👑🐉⚔️", 5000);
+          }, 3000);
+        } else {
+          setTimeout(() => {
+            showMessage(`Next: Scan ${getMarkerName(gameState.currentSequence[gameState.scannedMarkers.size])}`, 3000);
+          }, 3500);
+        }
+      } else {
+        // Wrong answer
+        showMessage(`❌ Wrong answer! Hint: ${gameState.puzzles[markerId].hint}`, 3000);
+      }
+    }
+
+    function revealMarkerObject(markerId) {
+      // Make all child entities visible
+      const markerEl = document.getElementById(markerId);
+      const entities = markerEl.querySelectorAll('a-entity, a-text');
+      entities.forEach(el => {
+        el.setAttribute('visible', 'true');
       });
     }
 
-    document.getElementById('btn-color').addEventListener('click', () => cube.emit('random-color'));
+    function updateProgressBar(markerId) {
+      const indicator = document.querySelector(`.marker-indicator[data-marker="${markerId}"]`);
+      if (indicator) {
+        indicator.classList.add('active');
+      }
+    }
 
-    // Gesture hooks
-    cube.addEventListener('tap',       () => cube.emit('toggle-spin'));        // single tap: spin on/off
-    cube.addEventListener('doubletap', () => cube.emit('random-color'));       // double tap: recolor
-    cube.addEventListener('longpress', () => hud.classList.toggle('hidden'));  // long press: show/hide HUD
+    function showMessage(text, duration = 2000) {
+      const overlay = document.getElementById('messageOverlay');
+      overlay.textContent = text;
+      overlay.classList.add('show');
+      
+      setTimeout(() => {
+        overlay.classList.remove('show');
+      }, duration);
+    }
+
+    function getMarkerName(markerId) {
+      const names = {
+        'marker1': '📖 Book',
+        'marker2': '🪨 Rock',
+        'marker3': '🪶 Feather',
+        'marker4': '🔑 Key',
+        'marker5': '🌼 Flower',
+        'marker6': '🕯️ Candle',
+        'marker7': '🛡️ Village Emblem'
+      };
+      return names[markerId] || markerId;
+    }
+
+    // Allow Enter key in puzzle input
+    document.getElementById('puzzleAnswer')?.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        submitPuzzle();
+      }
+    });
   </script>
 </body>
 </html>
